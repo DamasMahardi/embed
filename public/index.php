@@ -16,9 +16,12 @@ require_once dirname(__DIR__) . '/src/bootstrap.php';
 use App\Crawl\SiteConfig;
 use App\Crawl\SiteCatalogWriter;
 use App\Crawl\SiteRepository;
+use App\Crawl\DomainDiscovery;
 use App\Http\HttpClient;
+use App\Report\CrawlReport;
 use App\Service\IngestServiceClient;
 use App\Service\CrawlJobService;
+use App\Storage\CrawlSiteStore;
 use App\Support\Config;
 use App\Support\JobStore;
 use App\Support\Text;
@@ -60,36 +63,11 @@ $countLines = static function (string $file): int {
 // ---------------------------------------------------------------------------
 // Aksi POST: buat job + jalankan CLI di latar belakang.
 // ---------------------------------------------------------------------------
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['aksi'] ?? '') === 'tambah_site') {
-    $name = trim((string) ($_POST['name'] ?? ''));
-    $urls = preg_split('/[\r\n,]+/', (string) ($_POST['start_urls'] ?? '')) ?: [];
-    $urls = array_values(array_filter(array_map(static fn (string $url): string => trim($url), $urls)));
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['aksi'] ?? '') === 'discover') {
+    $domain = DomainDiscovery::normalize((string) ($_POST['domain'] ?? ''));
 
-    // ID dan nama boleh dikosongkan (bentuk ringkas config/sites.json tidak
-    // mewajibkan "name"): ID diambil dari nama bila ada, lalu dari host URL
-    // target — sama seperti id otomatis pada SiteRepository.
-    $id = Text::slug(trim((string) ($_POST['id'] ?? '')), 60);
-    if ($id === '') {
-        $id = Text::slug($name, 60);
-    }
-    if ($id === '' && $urls !== []) {
-        $id = Text::slug(SiteConfig::idForUrl($urls[0]), 60);
-    }
-
-    $invalidUrl = false;
-    foreach ($urls as $url) {
-        $parts = parse_url($url);
-        if (!is_array($parts) || !in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
-            || trim((string) ($parts['host'] ?? '')) === '') {
-            $invalidUrl = true;
-            break;
-        }
-    }
-
-    if ($id === '' || $urls === [] || $invalidUrl) {
-        header('Location: index.php?tipe=error&pesan=' . rawurlencode(
-            'Minimal satu URL http/https wajib diisi dengan benar (ID dibuat otomatis dari host URL bila dikosongkan).'
-        ) . '#tambah-site');
+    if ($domain === '' || !str_contains($domain, '.')) {
+        header('Location: index.php?tipe=error&pesan=' . rawurlencode('Domain tidak valid. Contoh: kemendagri.go.id') . '#cari-domain');
         exit;
     }
 
@@ -105,24 +83,168 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['aksi'] ?? '') =
         $metadata['year'] = (int) $year;
     }
 
-    $exclude = preg_split('/[\r\n]+/', (string) ($_POST['exclude_patterns'] ?? '')) ?: [];
-    $exclude = array_values(array_filter(array_map(static fn (string $value): string => trim($value), $exclude)));
+    $crawlConfig = $config['crawl'] ?? [];
+    $serviceConfig = $config['service'] ?? [];
+    $http = new HttpClient(
+        userAgent: (string) ($crawlConfig['user_agent'] ?? 'crawler-embed/1.0'),
+        connectTimeout: (int) ($serviceConfig['connect_timeout'] ?? 10),
+        maxRedirects: (int) ($crawlConfig['max_redirects'] ?? 5),
+        maxBytes: (int) ($crawlConfig['max_bytes'] ?? 5_242_880),
+        verifyTls: (bool) ($crawlConfig['verify_tls'] ?? true),
+        insecureRetry: (bool) ($crawlConfig['insecure_retry'] ?? true),
+        caBundle: (string) ($crawlConfig['ca_bundle'] ?? ''),
+    );
 
-    try {
-        (new SiteCatalogWriter(base_path('config/sites.json')))->add(
-            $id,
-            $name,
-            $urls,
-            $metadata,
-            $exclude,
-            isset($_POST['enabled']),
-        );
-    } catch (Throwable $exception) {
-        header('Location: index.php?tipe=error&pesan=' . rawurlencode($exception->getMessage()) . '#tambah-site');
+    $hasil = (new DomainDiscovery($http))->discover($domain, (int) ($crawlConfig['discovery_max_hosts'] ?? 80));
+
+    if ($hasil['situs'] === []) {
+        header('Location: index.php?tipe=error&pesan=' . rawurlencode(
+            'Tidak ada website aktif ditemukan untuk domain ' . $hasil['domain'] . '. Tidak ada data yang disimpan.'
+        ) . '#cari-domain');
         exit;
     }
 
-    header('Location: index.php?tipe=info&pesan=' . rawurlencode('Web ' . $id . ' berhasil ditambahkan.') . '#sites');
+    try {
+        $store = new CrawlSiteStore($config['mysql'] ?? []);
+
+        foreach ($hasil['situs'] as $item) {
+            $store->recordDiscovered(
+                $hasil['domain'],
+                (string) $item['url'],
+                (string) $item['host'],
+                (int) $item['status'],
+                $metadata,
+                'ditemukan saat pencarian domain (http=' . (int) $item['status'] . ')',
+            );
+        }
+
+        // "Semua log" pencarian domain disimpan sebagai satu baris log.
+        $store->saveDiscoveryLog($hasil['domain'], $hasil['situs'], (int) $hasil['kandidat']);
+    } catch (Throwable $exception) {
+        header('Location: index.php?tipe=error&pesan=' . rawurlencode($exception->getMessage()) . '#cari-domain');
+        exit;
+    }
+
+    header('Location: index.php?tipe=info&pesan=' . rawurlencode(
+        'Domain ' . $hasil['domain'] . ': ' . $hasil['jumlah'] . ' website ditemukan & disimpan ke database (panel Riwayat crawl).'
+    ) . '#riwayat');
+    exit;
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['aksi'] ?? '') === 'url_single') {
+    $url = trim((string) ($_POST['url_single'] ?? ''));
+    $parts = parse_url($url);
+    $valid = is_array($parts)
+        && in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
+        && trim((string) ($parts['host'] ?? '')) !== '';
+
+    if (!$valid) {
+        header('Location: index.php?tipe=error&pesan=' . rawurlencode('URL tidak valid. Contoh: https://ppid.kemendagri.go.id/') . '#url-single');
+        exit;
+    }
+
+    $metadata = [];
+    foreach (['document_type', 'province', 'city'] as $key) {
+        $value = trim((string) ($_POST[$key] ?? ''));
+        if ($value !== '') {
+            $metadata[$key] = $value;
+        }
+    }
+    $year = trim((string) ($_POST['year'] ?? ''));
+    if ($year !== '' && ctype_digit($year)) {
+        $metadata['year'] = (int) $year;
+    }
+
+    try {
+        (new SiteCatalogWriter(base_path('config/sites.json')))->replace(
+            [['url' => $url, 'host' => (string) $parts['host'], 'status' => 200]],
+            $metadata,
+        );
+    } catch (Throwable $exception) {
+        header('Location: index.php?tipe=error&pesan=' . rawurlencode($exception->getMessage()) . '#url-single');
+        exit;
+    }
+
+    header('Location: index.php?tipe=info&pesan=' . rawurlencode('URL ' . $url . ' ditulis ke config/sites.json. Silakan mulai crawl.') . '#sites');
+    exit;
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['aksi'] ?? '') === 'crawl_discovered') {
+    $semua = (string) ($_POST['semua'] ?? '0') === '1';
+    $urlsDipilih = array_values(array_filter(array_map('strval', (array) ($_POST['urls'] ?? []))));
+
+    try {
+        $store = new CrawlSiteStore($config['mysql'] ?? []);
+        $semuaRow = $store->list('discovered', 2000);
+    } catch (Throwable $exception) {
+        header('Location: index.php?tipe=error&pesan=' . rawurlencode($exception->getMessage()) . '#riwayat');
+        exit;
+    }
+
+    $terpilih = [];
+    foreach ($semuaRow as $row) {
+        $url = (string) ($row['url'] ?? '');
+
+        if ($semua || in_array($url, $urlsDipilih, true)) {
+            $terpilih[] = $row;
+        }
+    }
+
+    if ($terpilih === []) {
+        header('Location: index.php?tipe=error&pesan=' . rawurlencode('Tidak ada website discovered yang dipilih.') . '#riwayat');
+        exit;
+    }
+
+    // Tulis URL terpilih ke config/sites.json (menggantikan isi sebelumnya),
+    // metadata diambil dari database (hasil pencarian domain).
+    $situs = [];
+
+    foreach ($terpilih as $row) {
+        $situs[] = [
+            'url' => (string) ($row['url'] ?? ''),
+            'host' => (string) ($row['domain'] ?? ''),
+            'status' => 200,
+        ];
+    }
+
+    $pertama = $terpilih[0];
+
+    try {
+        (new SiteCatalogWriter(base_path('config/sites.json')))->replace($situs, [
+            'document_type' => (string) ($pertama['document_type'] ?? ''),
+            'province' => (string) ($pertama['province'] ?? ''),
+            'city' => (string) ($pertama['city'] ?? ''),
+            'year' => $pertama['year'] ?? '',
+        ]);
+    } catch (Throwable $exception) {
+        header('Location: index.php?tipe=error&pesan=' . rawurlencode($exception->getMessage()) . '#riwayat');
+        exit;
+    }
+
+    // Langsung jalankan crawl untuk seluruh site aktif (yang baru ditulis).
+    $crawlConfig = $config['crawl'] ?? [];
+    $options = [
+        'max_pages' => 0,
+        'max_depth' => -1,
+        'max_requests' => 0,
+        'concurrency' => max(1, (int) ($crawlConfig['concurrency'] ?? 1)),
+        'follow_links' => true,
+        'save_html' => true,
+        'respect_robots' => true,
+        'follow_documents' => 'on',
+        'follow_external' => SiteConfig::followExternalMode($crawlConfig['follow_external'] ?? 'family'),
+        'auto_retry' => 0,
+    ];
+
+    $launch = (new CrawlJobService($jobs, base_path()))->start([], $options);
+    $jobId = $launch['job_id'];
+    $pesan = $launch['ok']
+        ? 'Job ' . $jobId . ' dijalankan untuk ' . count($terpilih) . ' website discovered.'
+        : 'Job ' . $jobId . ' dibuat tetapi proses gagal dilepas: ' . $launch['pesan'];
+
+    header('Location: index.php?job=' . rawurlencode($jobId)
+        . '&tipe=' . ($launch['ok'] ? 'info' : 'error')
+        . '&pesan=' . rawurlencode($pesan));
     exit;
 }
 
@@ -137,14 +259,19 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['aksi'] ?? '') =
 
     $options = [
         'max_pages' => max(0, (int) ($_POST['max_pages'] ?? 0)),
-        'max_depth' => max(0, (int) ($_POST['max_depth'] ?? 0)),
+        'max_depth' => max(-1, (int) ($_POST['max_depth'] ?? 0)),
         'max_requests' => max(0, (int) ($_POST['max_requests'] ?? 0)),
         'concurrency' => max(1, (int) ($_POST['concurrency'] ?? 1)),
-        'follow_links' => isset($_POST['follow_links']) || (int) ($_POST['max_depth'] ?? 0) > 0,
+        'follow_links' => isset($_POST['follow_links']) || (int) ($_POST['max_depth'] ?? 0) !== 0,
         'save_html' => isset($_POST['save_html']),
         'respect_robots' => isset($_POST['robots']),
         // "on"/"off" dari hidden + checkbox; kosong = pakai bawaan .env.
         'follow_documents' => (string) ($_POST['follow_documents'] ?? ''),
+        // Jelajah situs lain (off|family|all): dari pilihan form, lalu dari
+        // config/app.php (CRAWLER_FOLLOW_EXTERNAL).
+        'follow_external' => SiteConfig::followExternalMode(
+            $_POST['follow_external'] ?? (Config::get('crawl.follow_external', 'family'))
+        ),
         // Pengulangan otomatis bila proses berhenti karena galat fatal.
         'auto_retry' => max(0, (int) ($_POST['auto_retry'] ?? 0)),
     ];
@@ -295,7 +422,23 @@ $cards = [];
 $cards[] = Ui::statCard('Site aktif', (string) count($activeSites), 'total ' . count($allSites) . ' site di config/sites.json');
 $cards[] = Ui::statCard('Job tercatat', (string) count($jobs->all(1000)), 'folder ' . Ui::relPath($jobs->dir()));
 
-if ($lastVector !== null) {
+// Kartu vektor memakai RUN TERBARU (bukan berkas termuda menurut waktu ubah):
+// berkas run lama bisa saja masih ditulis proses yang tertinggal sehingga
+// tampak "terbaru" padahal bukan run yang sedang berjalan.
+$laporanVektor = new CrawlReport($config['paths'] ?? []);
+$runTerakhir = $laporanVektor->latestRunId();
+
+if ($runTerakhir !== '') {
+    $perSiteTerakhir = $laporanVektor->perSiteRun($runTerakhir);
+    $jumlahWebTerakhir = count($perSiteTerakhir['baris']);
+
+    $cards[] = Ui::statCard(
+        'Vektor run terakhir',
+        (string) $perSiteTerakhir['total']['vektor'],
+        $runTerakhir . ' - ' . $jumlahWebTerakhir . ' web'
+            . ($perSiteTerakhir['selesai'] ? '' : ' (sedang berjalan)')
+    );
+} elseif ($lastVector !== null) {
     $cards[] = Ui::statCard(
         'Vektor terakhir',
         (string) $countLines($lastVector),
@@ -358,9 +501,12 @@ $batasHalamanSites = array_map(static fn ($site): int => $site->maxPages, $webSi
 $defaultMaxPages = $batasHalamanSites !== [] && !in_array(0, $batasHalamanSites, true)
     ? max($batasHalamanSites)
     : max(0, (int) ($siteDefaults['max_pages'] ?? 0));
+// Kebijakan sama untuk kedalaman: bila ada site yang TANPA BATAS (-1), form
+// juga menampilkan -1 supaya nilai yang tampak sama dengan yang dipakai run.
+$kedalamanSites = array_map(static fn ($site): int => $site->maxDepth, $webSites);
 $defaultMaxDepth = $webSites !== []
-    ? max(0, ...array_map(static fn ($site): int => $site->maxDepth, $webSites))
-    : max(0, (int) ($siteDefaults['max_depth'] ?? ($crawlConfig['max_depth'] ?? 0)));
+    ? (in_array(-1, $kedalamanSites, true) ? -1 : max(0, ...$kedalamanSites))
+    : max(-1, (int) ($siteDefaults['max_depth'] ?? ($crawlConfig['max_depth'] ?? -1)));
 $defaultMaxRequests = max(0, (int) ($crawlConfig['max_requests_per_crawl'] ?? 0));
 $defaultConcurrency = max(1, (int) ($crawlConfig['concurrency'] ?? 1));
 
@@ -374,10 +520,37 @@ $out[] = '<div class="panel"><h2>Mulai crawl</h2>'
         (bool) ($crawlConfig['follow_document_links'] ?? false),
         (bool) ($crawlConfig['follow_links'] ?? true),
         max(0, (int) ($crawlConfig['auto_retry'] ?? 0)),
+        SiteConfig::followExternalMode($crawlConfig['follow_external'] ?? 'family'),
     )
     . '</div>';
-$out[] = '<div class="panel" id="tambah-site"><h2>Tambah web / dokumen yang diproses</h2>'
-    . DashboardView::addSiteForm() . '</div>';
+$out[] = '<div class="panel" id="cari-domain"><h2>Cari website berdasarkan domain</h2>'
+    . DashboardView::discoverForm() . '</div>';
+
+$out[] = '<div class="panel" id="url-single"><h2>Crawl URL tunggal</h2>'
+    . DashboardView::singleUrlForm() . '</div>';
+
+// Riwayat crawl dari MySQL lokal -----------------------------------------------
+$storeFilter = (string) ($_GET['store'] ?? '');
+$storeFilter = in_array($storeFilter, ['success', 'failed_akses', 'discovered'], true) ? $storeFilter : '';
+$storeRows = [];
+$storeStats = ['success' => 0, 'failed_akses' => 0, 'discovered' => 0, 'total' => 0];
+$discoveryLogs = [];
+
+if (!empty($config['crawl']['mysql_record'] ?? false)) {
+    try {
+        $store = new CrawlSiteStore($config['mysql'] ?? []);
+        $storeRows = $store->list($storeFilter);
+        $storeStats = $store->stats();
+        $discoveryLogs = $store->discoveryLogs(30);
+    } catch (Throwable $exception) {
+        $storeRows = [];
+        $storeStats = ['success' => 0, 'failed_akses' => 0, 'discovered' => 0, 'total' => 0];
+        $out[] = '<div class="alert alert-error">MySQL tidak tersedia: ' . Ui::e($exception->getMessage()) . '</div>';
+    }
+}
+
+$out[] = DashboardView::crawlStorePanel($storeRows, $storeStats, $storeFilter);
+$out[] = DashboardView::discoveryLogPanel($discoveryLogs);
 
 // Detail job ----------------------------------------------------------------
 if (is_array($job)) {
@@ -388,6 +561,27 @@ if (is_array($job)) {
         (string) Config::path('logs') . DIRECTORY_SEPARATOR . 'crawl-' . date('Y-m-d') . '.txt',
         $jobs->consolePath($jobId),
     );
+
+    // Ringkasan per website (Web | Dokumen | Chunk | Vektor) untuk run job ini.
+    // Dihitung dari log run + berkas vektor, jadi angkanya tampil & bertambah
+    // walaupun crawl masih berjalan (halaman menyegar sendiri tiap 5 detik).
+    $runJob = (string) ($job['run_id'] ?? '');
+
+    if ($runJob !== '') {
+        // Pakai hasil yang sudah dihitung untuk kartu ringkasan bila run-nya sama
+        // supaya log run tidak dipindai dua kali dalam satu render.
+        $perSite = ($runJob === $runTerakhir && isset($perSiteTerakhir))
+            ? $perSiteTerakhir
+            : $laporanVektor->perSiteRun($runJob);
+
+        $out[] = DashboardView::perSitePanel(
+            $perSite['baris'],
+            $perSite['total'],
+            $runJob,
+            // Badge "BERJALAN" hanya bila job memang aktif dan log belum RUN_END.
+            $autoRefresh && !$perSite['selesai'],
+        );
+    }
 }
 
 // Tabel web -----------------------------------------------------------------

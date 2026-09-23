@@ -14,6 +14,8 @@ use App\Pipeline\RunResult;
 use App\Pipeline\VectorStore;
 use App\Qdrant\QdrantClient;
 use App\Qdrant\QdrantPush;
+use App\Report\CrawlEstimator;
+use App\Storage\CrawlSiteStore;
 use App\Service\CrawlJobService;
 use App\Service\IngestServiceClient;
 use App\Support\Config;
@@ -60,6 +62,7 @@ final class Application
                 'list', 'sites', 'daftar' => $this->listSites(),
                 'crawl', 'jalan', 'run' => $this->crawl($args),
                 'documents', 'dokumen', 'dokumen-ulang', 'reprocess' => $this->documents($args),
+                'estimate', 'estimasi', 'perkiraan' => $this->estimate($args),
                 'retry', 'ulangi', 'ulang-job' => $this->retry($args),
                 'qdrant', 'push-qdrant', 'vektor' => $this->qdrant($args),
                 'logs', 'log' => $this->logs($args),
@@ -112,12 +115,12 @@ final class Application
 
         foreach ($sites as $site) {
             $this->line(sprintf(
-                '%-24s %-8s %-8s halaman=%-12s kedalaman=%-2d jeda=%-6d tautan=%-5s %s',
+                '%-24s %-8s %-8s halaman=%-12s kedalaman=%-12s jeda=%-6d tautan=%-5s %s',
                 $site->id,
                 $site->enabled ? '[AKTIF]' : '[MATI]',
                 $site->documentMode ? 'dokumen' : 'web',
                 $site->maxPages === 0 ? 'tanpa batas' : (string) $site->maxPages,
-                $site->maxDepth,
+                $site->maxDepth < 0 ? 'tanpa batas' : (string) $site->maxDepth,
                 $site->rateLimitMs,
                 $site->followLinks ? 'ya' : 'tidak',
                 $site->name
@@ -135,6 +138,9 @@ final class Application
                 $this->line('  dokumen: ' . ($ikutiDokumen
                     ? 'tautan .pdf/.docx pada halaman ini IKUT diunduh & diparse'
                     : 'tautan .pdf/.docx dilewati (CRAWLER_FOLLOW_DOCUMENT_LINKS=true untuk mengikuti)'));
+                $this->line('  situs lain: ' . ($site->followExternal === 'off'
+                    ? 'tidak dijelajahi ("follow_external": "family"/"all" untuk mengikuti)'
+                    : $site->followExternal . ' (host lain dalam keluarga domain yang sama / semua host)'));
             }
 
             if ($site->contentApi !== []) {
@@ -201,6 +207,51 @@ final class Application
             return 1;
         }
 
+        // Anti-duplikat: website yang SEMUA start_urls-nya sudah pernah sukses
+        // (tersimpan di MySQL) dilewati, kecuali run ini memakai --re-crawl.
+        $crawlSettings = $this->config['crawl'] ?? [];
+        $mysqlRecord = (bool) ($crawlSettings['mysql_record'] ?? false);
+        $skipSuccess = (bool) ($crawlSettings['mysql_skip_success'] ?? false);
+        $rekrawal = (bool) ($parsed['run']['re_crawl'] ?? false);
+
+        if ($mysqlRecord && $skipSuccess && !$rekrawal) {
+            try {
+                $store = new CrawlSiteStore($this->config['mysql'] ?? []);
+
+                foreach ($sites as $index => $site) {
+                    $sudah = $site->startUrls !== [];
+
+                    foreach ($site->startUrls as $url) {
+                        if (!$store->hasSuccess($url)) {
+                            $sudah = false;
+                            break;
+                        }
+                    }
+
+                    if (!$sudah) {
+                        continue;
+                    }
+
+                    unset($sites[$index]);
+                    $this->line('  dilewati (sudah sukses sebelumnya): ' . $site->id . ' — pakai --re-crawl untuk memaksa');
+                }
+
+                $sites = array_values($sites);
+            } catch (\Throwable $exception) {
+                $this->warn('MySQL tidak bisa dipakai untuk anti-duplikat: ' . $exception->getMessage());
+            }
+        }
+
+        if ($sites === []) {
+            $this->warn('Semua site sudah pernah di-crawl sukses (lihat MySQL). Pakai --re-crawl untuk mengulang.');
+
+            if ($jobId !== null) {
+                $jobs->markFailed($jobId, 'Semua site sudah pernah di-crawl sukses.');
+            }
+
+            return 1;
+        }
+
         $runId = $this->runId();
         $logger = $this->logger($runId);
 
@@ -241,13 +292,15 @@ final class Application
         foreach ($sites as $site) {
             $halaman = (int) ($parsed['run']['max_pages'] ?? $site->maxPages);
 
+            $kedalamanRun = (int) ($parsed['run']['max_depth'] ?? $site->maxDepth);
+
             $this->line(sprintf(
-                '  - %-24s %s  (jenis=%s, halaman=%s, kedalaman=%d)',
+                '  - %-24s %s  (jenis=%s, halaman=%s, kedalaman=%s)',
                 $site->id,
                 implode(', ', $site->startUrls),
                 $site->documentMode ? 'dokumen' : 'web',
                 $halaman === 0 ? 'tanpa batas' : (string) $halaman,
-                $parsed['run']['max_depth'] ?? $site->maxDepth
+                $kedalamanRun < 0 ? 'tanpa batas' : (string) $kedalamanRun
             ));
         }
 
@@ -274,6 +327,14 @@ final class Application
                 . ' / ' . (string) ($this->config['qdrant']['collection'] ?? 'documents')
             : 'tidak (pakai --push-qdrant untuk mengaktifkan pada run ini)'));
 
+        $crawlSettings = $this->config['crawl'] ?? [];
+        $ikutiSitusLain = SiteConfig::followExternalMode(
+            $parsed['run']['follow_external'] ?? ($crawlSettings['follow_external'] ?? 'family')
+        );
+        $this->line('  jelajah situs lain   : ' . ($ikutiSitusLain === 'off'
+            ? 'tidak (hanya host pada URL target)'
+            : $ikutiSitusLain . ' (maks ' . max(0, (int) ($crawlSettings['follow_external_max_hosts'] ?? 25)) . ' host lintas situs)'));
+
         $this->line('  log run: ' . $logger->runFile());
         $this->line('');
         $result = null;
@@ -286,6 +347,50 @@ final class Application
             }
 
             throw $exception;
+        }
+
+        // Catat hasil per website ke MySQL lokal: sukses -> "success" (anti
+        // duplikat pada run berikutnya), gagal akses -> "failed_akses".
+        if ($mysqlRecord) {
+            try {
+                $store = new CrawlSiteStore($this->config['mysql'] ?? []);
+                $run = (string) ($result->runId !== '' ? $result->runId : $runId);
+
+                foreach ($result->sites as $siteId => $stat) {
+                    $situs = $repository->find((string) $siteId);
+
+                    if ($situs === null) {
+                        continue;
+                    }
+
+                    $diproses = (int) ($stat['url_diproses'] ?? 0);
+                    $gagal = (int) ($stat['gagal_unduh'] ?? 0);
+                    $status = $diproses > 0 && ($diproses - $gagal) === 0 ? 'failed_akses' : 'success';
+                    $pesan = $status === 'failed_akses'
+                        ? 'failed akses (' . $gagal . ' unduhan gagal dari ' . $diproses . ' percobaan)'
+                        : 'crawl selesai: ' . (int) ($stat['dokumen'] ?? 0) . ' dokumen, ' . (int) ($stat['vektor'] ?? 0) . ' vektor';
+
+                    foreach ($situs->startUrls as $url) {
+                        $store->record(
+                            \App\Crawl\DomainDiscovery::normalize($url),
+                            $url,
+                            [
+                                'document_type' => $situs->documentType(),
+                                'province' => $situs->metadataFor('province'),
+                                'city' => $situs->metadataFor('city'),
+                                'year' => $situs->metadataFor('year'),
+                            ],
+                            $status,
+                            $pesan,
+                            $run,
+                        );
+                    }
+
+                    $this->line('  tercatat MySQL : ' . $siteId . ' -> ' . $status);
+                }
+            } catch (\Throwable $exception) {
+                $this->warn('Gagal mencatat ke MySQL: ' . $exception->getMessage());
+            }
         }
 
         if ($jobId !== null) {
@@ -583,6 +688,107 @@ final class Application
         $this->line('');
 
         return $totalGagal === 0 ? 0 : 1;
+    }
+
+    /**
+     * Estimasi lama crawl SEBELUM run (kalibrasi dari riwayat logs/runs/*.txt).
+     *
+     * Pemakaian:
+     *   php bin/crawl.php estimate --halaman=200 --render=auto [site ...]
+     *
+     * @param list<string> $args
+     */
+    private function estimate(array $args): int
+    {
+        $repository = new SiteRepository();
+        $ids = [];
+        $halaman = 0;
+        $modeRender = 'auto';
+
+        foreach ($args as $arg) {
+            if (!str_starts_with($arg, '--')) {
+                $ids[] = $arg;
+
+                continue;
+            }
+
+            $option = substr($arg, 2);
+            $value = null;
+
+            if (str_contains($option, '=')) {
+                [$option, $value] = explode('=', $option, 2);
+            }
+
+            switch (strtolower(str_replace('-', '_', $option))) {
+                case 'halaman':
+                case 'pages':
+                case 'max_pages':
+                    $halaman = max(0, (int) $value);
+                    break;
+
+                case 'render':
+                    $mode = HeadlessRenderer::modeValue($value) ?? 'auto';
+                    $modeRender = $mode;
+                    break;
+
+                default:
+                    $this->warn('Opsi tidak dikenal diabaikan: --' . $option);
+            }
+        }
+
+        try {
+            $sites = $ids === [] ? $repository->enabled() : $repository->findMany($ids);
+        } catch (Throwable $exception) {
+            $this->error($exception->getMessage());
+
+            return 1;
+        }
+
+        if ($sites === []) {
+            $this->warn('Tidak ada site aktif. Periksa config/sites.json atau pakai --site=<id>.');
+
+            return 1;
+        }
+
+        $estimator = new CrawlEstimator($this->config['paths'] ?? []);
+        $hasil = $estimator->estimate($sites, ['halaman' => $halaman, 'mode_render' => $modeRender]);
+        $total = $hasil['total'];
+
+        $this->title('ESTIMASI LAMA CRAWL');
+        $this->line('  kalibrasi   : ' . (int) $hasil['sampel'] . ' log run pada logs/runs/'
+            . ($hasil['yakin'] ? '' : ' (masih sedikit, angka kasar)'));
+        $this->line('  halaman/web : ' . ($halaman > 0 ? (string) $halaman . ' (dari opsi --halaman)' : 'rata-rata riwayat tiap site'));
+        $this->line('  render      : ' . $modeRender);
+        $this->line('');
+
+        foreach ($hasil['baris'] as $row) {
+            $this->line(sprintf(
+                '  %-26s halaman=%-6d dokumen=%-5d vektor=%-6d %s (unduh %s + parse %s + render %s + embed %s) [%s]',
+                (string) $row['site'],
+                (int) $row['halaman'],
+                (int) $row['dokumen'],
+                (int) $row['vektor'],
+                Text::duration((float) $row['detik_total']),
+                Text::duration((float) $row['detik_unduh']),
+                Text::duration((float) $row['detik_parse']),
+                Text::duration((float) $row['detik_render']),
+                Text::duration((float) $row['detik_embed']),
+                (string) $row['sumber']
+            ));
+        }
+
+        $this->line('');
+        $this->line('  TOTAL       : ' . Text::duration((float) $total['detik_total'])
+            . ' (' . $total['halaman'] . ' halaman, ' . $total['vektor'] . ' vektor)');
+        $this->line('');
+
+        foreach ($hasil['asumsi'] as $asumsi) {
+            $this->line('  - ' . $asumsi);
+        }
+
+        $this->line('');
+
+        return 0;
     }
 
     private function qdrant(array $args): int
@@ -972,7 +1178,8 @@ final class Application
                     break;
 
                 case 'max_depth':
-                    $run['max_depth'] = max(0, (int) $value);
+                    // -1 = TANPA BATAS (seluruh situs dijelajahi).
+                    $run['max_depth'] = max(-1, (int) $value);
                     break;
 
                 case 'max_requests':
@@ -1046,6 +1253,19 @@ final class Application
                 case 'no_follow_document_links':
                 case 'tanpa_dokumen':
                     $run['follow_document_links'] = false;
+                    break;
+
+                case 'follow_external':
+                case 'jelajah_situs_lain':
+                    // off | family | all (lihat SiteConfig::followExternalMode).
+                    $run['follow_external'] = SiteConfig::followExternalMode($value);
+                    break;
+
+                case 're_crawl':
+                case 'recrawl':
+                case 'paksa':
+                    // Lewati pengecualian anti-duplikat MySQL.
+                    $run['re_crawl'] = true;
                     break;
 
                 case 'auto_retry':
@@ -1136,6 +1356,7 @@ final class Application
         $this->line('                        (markdown dibersihkan dari menu/footer, lalu otomatis push ke Qdrant)');
         $this->line('  documents [site ...]  proses ULANG berkas dokumen (PDF/DOCX/XLSX) yang sudah ada di');
         $this->line('                        storage/documents: /parse -> /embed -> Qdrant, TANPA crawl ulang');
+        $this->line('  estimate [site ...]   perkirakan lama crawl SEBELUM dijalankan (kalibrasi dari riwayat run)');
         $this->line('  logs [--tail=N]       lokasi log txt + cuplikan log run terakhir');
         $this->line('  jobs [--limit=N]      daftar job crawl (status, jeda, pengulangan)');
         $this->line('  retry --job=ID        jalankan ULANG job dengan site + opsi yang sama');
@@ -1154,7 +1375,8 @@ final class Application
         $this->line('  --site=id1,id2                batasi ke site tertentu (nama site bisa juga)');
         $this->line('  --max-pages=N                 batas halaman per site untuk run ini (0 = TANPA BATAS,');
         $this->line('                                bawaan; seluruh halaman/berkas yang ditemukan diproses)');
-        $this->line('  --max-depth=N                 batas kedalaman tautan (0 = hanya start_url)');
+        $this->line('  --max-depth=N                 batas kedalaman tautan (0 = hanya start_url,');
+        $this->line('                                -1 = TANPA BATAS: seluruh situs dijelajahi, BAWAAN)');
         $this->line('  --max-requests=N              batas TOTAL permintaan satu run lintas site (0 = bebas)');
         $this->line('  --concurrency=N               jumlah halaman diunduh bersamaan (1 = satu per satu)');
         $this->line('  --follow / --no-follow        aktif/nonaktif crawling berantai');
@@ -1168,6 +1390,12 @@ final class Application
         $this->line('                                halaman web: diunduh apa adanya lalu dikirim ke /parse');
         $this->line('  --no-follow-documents         lewati tautan dokumen (hanya entri dokumen pada');
         $this->line('                                config/sites.json yang diambil)');
+        $this->line('  --follow-external=MODE        jelajahi SITUS LAIN yang ditautkan halaman:');
+        $this->line('                                off = hanya host pada URL target,');
+        $this->line('                                family = satu keluarga domain (mis. *.kemendagri.go.id),');
+        $this->line('                                all = semua host yang ditautkan (dibatasi jumlah host)');
+        $this->line('  --re-crawl                    paksa crawl walau website sudah pernah sukses');
+        $this->line('                                (menimpa pengecualian anti-duplikat MySQL)');
         $this->line('  --push-qdrant                 unggah hasil /embed ke Qdrant begitu site selesai');
         $this->line('  --no-push-qdrant              lewati push Qdrant untuk run ini (crawl saja)');
         $this->line('  --auto-retry=N                ulangi OTOMATIS job ini sampai N kali bila proses');
@@ -1177,7 +1405,7 @@ final class Application
         $this->line('  CRAWL_MAX_PAGES=0            batas halaman per site (0 = tanpa batas, BAWAAN)');
         $this->line('  MAX_REQUESTS_PER_CRAWL=0     batas TOTAL unduhan satu run lintas site');
         $this->line('                               (0 = tanpa batas, BAWAAN)');
-        $this->line('  CRAWL_MAX_DEPTH=0            kedalaman tautan (0 = hanya start_urls)');
+        $this->line('  CRAWL_MAX_DEPTH=-1           kedalaman tautan (-1 = TANPA BATAS, BAWAAN)');
         $this->line('  CRAWL_CONCURRENCY=5          jumlah halaman diunduh bersamaan per batch');
         $this->line('  Opsi --max-pages=N / --max-requests=N dan kolom pada dashboard menimpa');
         $this->line('  nilai di atas untuk satu run. Bila batas tercapai, log mencatat');
@@ -1285,6 +1513,13 @@ final class Application
         $this->line('  --dry-run             tampilkan berkas & URL yang akan diproses, tanpa parse/embed');
         $this->line('  Berkas mentah dihapus setelah vektornya terkirim (kecuali delete_documents_after_push=false).');
         $this->line('  Kejadian di log: DOK_RESUME, DOK_RESUME_END, DOC_TERTUNDA, DOC_CLEANUP.');
+        $this->line('');
+        $this->line('Opsi estimate (perkiraan lama crawl SEBELUM run):');
+        $this->line('  --halaman=N                   jumlah halaman per web (0 = pakai rata-rata riwayat)');
+        $this->line('  --render=auto|always|off      asumsi mode render browser pada perkiraan');
+        $this->line('  Angka dikalibrasi dari logs/runs/*.txt + logs/crawl-*.txt: waktu per unduhan,');
+        $this->line('  per permintaan /parse, per vektor /embed, dan vektor per halaman.');
+        $this->line('  Halaman web: menu "Estimasi" (estimate.php).');
         $this->line('');
         $this->line('Opsi qdrant:');
         $this->line('  --file=storage/vectors/<site>/<run>.jsonl  berkas vektor sumber (default: .jsonl terbaru)');

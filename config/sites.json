@@ -1,17 +1,324 @@
-﻿[
-     {
-        "url": "https://www.djkn.kemenkeu.go.id/",
+[
+    {
+        "url": "https://www.kemendagri.go.id/",
         "documentType": "",
-        "province": "DKI Jakarta",
+        "province": "DKI JAKARTA",
         "city": "",
         "year": "2026"
     },
-     {
+    {
+        "url": "https://usersvc.ekososbud.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "http://storage-bpsdm.kemendagri.go.id:9090/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://sipd.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://siormas.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://siormas-v2.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://sidatinkum.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://setjen.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://service.sipd.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://pujaindah.inovasi.litbang.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://ppsdmregmakassar.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
         "url": "https://ppid.kemendagri.go.id/",
         "documentType": "",
-        "province": "DKI Jakarta",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://polpum.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://perpustakaan.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://jurnalsetjen.kemendagri.go.id/bjgs",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://jurnal.kemendagri.go.id/index.php/index/en",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://jdih.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://indeks2024.inovasi.bskdn.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://indeks2022.inovasi.litbang.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://indeks2021.inovasi.litbang.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://helpdesk-pamongdesa.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://filesvc.ekososbud.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://eternak.inovasi.litbang.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://eternak-api.inovasi.litbang.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://ekososbud.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://drive-dwp.kemendagri.go.id/index.php/login",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://dokservice.ekososbud.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://dashboardsvc.ekososbud.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://bskdn.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://bangda.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://backend.kemendagri.go.id/api-docs",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api.siormas.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api.siormas-v2.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api.ekososbud.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-reference.siormas.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-reference.siormas-v2.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-io-report.siormas.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-io-report.siormas-v2.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-file.siormas.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-file.siormas-v2.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-auth.siormas.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-auth.siormas-v2.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-audit.siormas.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://api-audit.siormas-v2.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://adminer.ekososbud.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
+        "city": "",
+        "year": "2026"
+    },
+    {
+        "url": "https://accountsvc.ekososbud.kemendagri.go.id/",
+        "documentType": "",
+        "province": "DKI JAKARTA",
         "city": "",
         "year": "2026"
     }
-    
 ]

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Crawl\SiteConfig;
 use App\Qdrant\QdrantClient;
 use App\Support\Env;
 
@@ -32,6 +33,19 @@ return [
         'embed_timeout' => Env::int('INGEST_EMBED_TIMEOUT', 300),
         'retries' => Env::int('INGEST_RETRIES', 3),
         'retry_delay_ms' => Env::int('INGEST_RETRY_DELAY_MS', 1000),
+    ],
+
+    /*
+     * MySQL lokal (Laragon) untuk riwayat crawl per website: dipakai mencegah
+     * duplikat (website sukses dilewati) dan mencatat yang gagal akses
+     * ("failed_akses"). Database & tabel dibuat otomatis pada pemakaian pertama.
+     */
+    'mysql' => [
+        'host' => Env::get('MYSQL_HOST', '127.0.0.1'),
+        'port' => Env::int('MYSQL_PORT', 3306),
+        'database' => Env::get('MYSQL_DB', 'crawler_embed'),
+        'user' => Env::get('MYSQL_USER', 'root'),
+        'password' => Env::get('MYSQL_PASS', ''),
     ],
 
     'crawl' => [
@@ -72,6 +86,47 @@ return [
          * jadi batasnya dipisah dan defaultnya 64 MB.
          */
         'document_max_bytes' => Env::int('CRAWLER_DOCUMENT_MAX_BYTES', 67_108_864),
+
+        /*
+         * Jelajahi SITUS LAIN yang ditautkan halaman yang sedang di-crawl.
+         * Contoh nyata: halaman www.kemendagri.go.id menautkan
+         * otda.kemendagri.go.id, polpum.kemendagri.go.id, dan sebagainya --
+         * tanpa setelan ini tautan tersebut dilewati karena hostnya berbeda.
+         *
+         *   off    = hanya host pada start_urls (perilaku lama);
+         *   family = hanya host SATU KELUARGA DOMAIN (keluarga domain dari
+         *            start_urls + subdomainnya, mis. *.kemendagri.go.id);
+         *   all    = semua host http(s) yang ditemukan (dibatasi
+         *            follow_external_max_hosts supaya tidak menjelajahi
+         *            seluruh internet).
+         *
+         * Bisa ditimpa per entri sites.json ("follow_external") dan per run
+         * (--follow-external=off|family|all). Kejadian dicatat pada log:
+         * HOST_BARU, HOST_LIMIT, CROSS_SITE_SKIP.
+         */
+        'follow_external' => SiteConfig::followExternalMode(Env::get('CRAWLER_FOLLOW_EXTERNAL', 'family')),
+        'follow_external_max_hosts' => max(0, Env::int('CRAWLER_FOLLOW_EXTERNAL_MAX_HOSTS', 25)),
+
+        /*
+         * Tautan GOOGLE DRIVE pada halaman yang di-crawl: folder publik
+         * dibaca isinya lalu setiap berkasnya diunduh -> /parse -> /embed ->
+         * Qdrant; berkas Google Docs/Sheets/Slides diekspor ke docx/xlsx/pptx.
+         * Per entri sites.json boleh dimatikan ("google_drive": false).
+         * Batas berkas per folder: CRAWLER_GDRIVE_MAX_FILES (bawaan 200).
+         * Log: GDRIVE_SCAN, GDRIVE_QUEUE, GDRIVE_GAGAL, GDRIVE_SKIP.
+         */
+        'google_drive' => Env::bool('CRAWLER_GOOGLE_DRIVE', true),
+        'gdrive_max_files' => max(1, Env::int('CRAWLER_GDRIVE_MAX_FILES', 200)),
+
+        /*
+         * Catat hasil crawl ke MySQL lokal (lihat blok "mysql"): website yang
+         * sukses dicatat "success" (dilewati pada run berikutnya bila
+         * mysql_skip_success=true), yang gagal akses dicatat "failed_akses".
+         */
+        'mysql_record' => Env::bool('CRAWLER_MYSQL_RECORD', true),
+        'mysql_skip_success' => Env::bool('CRAWLER_MYSQL_SKIP_SUCCESS', true),
+        // Batas jumlah kandidat host yang di-probe saat pencarian domain.
+        'discovery_max_hosts' => max(5, Env::int('CRAWLER_DISCOVERY_MAX_HOSTS', 80)),
 
         /*
          * Tautan berkas dokumen (.pdf/.docx/.xlsx/...) yang ditemukan PADA
@@ -193,9 +248,12 @@ return [
         /*
          * Kedalaman tautan default untuk site yang tidak menulis "max_depth"
          * pada config/sites.json: 0 = hanya start_urls, 1 = boleh ikut tautan
-         * dari start_urls, dst. Site/tombol UI/CLI tetap bisa menimpanya.
+         * dari start_urls, dst. -1 = TANPA BATAS (BAWAAN): seluruh situs
+         * dijelajahi sampai tidak ada tautan baru sehingga tidak ada data yang
+         * terlewat (lihat CRAWL_MAX_DEPTH pada .env).
+         * Site/tombol UI/opsi CLI --max-depth=N tetap bisa menimpanya.
          */
-        'max_depth' => max(0, Env::int('CRAWL_MAX_DEPTH', 0)),
+        'max_depth' => max(-1, Env::int('CRAWL_MAX_DEPTH', -1)),
 
         /*
          * Sakelar GLOBAL "follow_links": nilai bawaan untuk SEMUA site yang

@@ -102,4 +102,46 @@ final class SiteCatalogWriter
 
         return ['id' => $id, 'added' => count($urls)];
     }
+
+    /**
+     * TULIS ULANG config/sites.json dengan daftar hasil penemuan domain.
+     *
+     * Dipakai alur "Cari website berdasarkan domain": hasil pencarian yang
+     * SUKSES menggantikan isi config/sites.json sebelumnya (format flat
+     * sederhana: url + documentType/province/city/year).
+     *
+     * @param list<array{url: string, host: string, status: int}> $situs
+     * @param array<string, mixed> $metadata document_type, province, city, year
+     *
+     * @return int jumlah entri yang ditulis
+     */
+    public function replace(array $situs, array $metadata = []): int
+    {
+        $entries = [];
+
+        foreach ($situs as $item) {
+            $entries[] = [
+                'url' => (string) $item['url'],
+                'documentType' => (string) ($metadata['document_type'] ?? ''),
+                'province' => (string) ($metadata['province'] ?? ''),
+                'city' => (string) ($metadata['city'] ?? ''),
+                'year' => $metadata['year'] ?? '',
+            ];
+        }
+
+        $json = json_encode($entries, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        if ($json === false) {
+            throw new RuntimeException('Gagal mengencode config/sites.json.');
+        }
+
+        $temporary = $this->path . '.tmp';
+
+        if (@file_put_contents($temporary, $json . PHP_EOL, LOCK_EX) === false || !@rename($temporary, $this->path)) {
+            @unlink($temporary);
+            throw new RuntimeException('Gagal menyimpan config/sites.json.');
+        }
+
+        return count($entries);
+    }
 }

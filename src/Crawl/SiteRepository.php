@@ -65,6 +65,17 @@ final class SiteRepository
             // yang tidak muncul di HTML/DOM, mis. daftar PDF dari API situs);
             // boleh ditimpa per entri sites.json ("auto_documents": false).
             'auto_documents' => Config::bool('crawl.auto_documents', true),
+            // Jelajahi situs lain (satu keluarga domain / semua host) yang
+            // ditautkan halaman; boleh ditimpa per entri sites.json
+            // ("follow_external": "off"|"family"|"all") dan per run
+            // (--follow-external=...).
+            'follow_external' => SiteConfig::followExternalMode(Config::get('crawl.follow_external', 'off')),
+            'follow_external_max_hosts' => max(0, Config::int('crawl.follow_external_max_hosts', 25)),
+            // Tautan Google Drive (folder publik dibaca isinya, berkasnya
+            // diunduh -> /parse -> /embed -> Qdrant); boleh ditimpa per entri
+            // sites.json ("google_drive": false).
+            'google_drive' => Config::bool('crawl.google_drive', true),
+            'gdrive_max_files' => max(1, Config::int('crawl.gdrive_max_files', 200)),
             'chunk_size' => Config::int('chunk.size', 3000),
             'chunk_overlap' => Config::int('chunk.overlap', 300),
             'min_chunk_length' => Config::int('chunk.min_length', 50),

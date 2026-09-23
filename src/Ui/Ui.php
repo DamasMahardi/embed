@@ -60,6 +60,8 @@ final class Ui
 
         $nav = [
             'index' => ['Dashboard', 'index.php'],
+            'report' => ['Report', 'report.php'],
+            'estimate' => ['Estimasi', 'estimate.php'],
             'logs' => ['Log & Job', 'logs.php'],
         ];
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Crawl\SiteConfig;
 use App\Support\JobLauncher;
 use App\Support\JobStore;
 
@@ -165,6 +166,12 @@ final class CrawlJobService
             $arguments[] = '--follow-documents';
         } elseif ($followDocuments === 'off') {
             $arguments[] = '--no-follow-documents';
+        }
+
+        // Jelajah situs lain (off|family|all): selalu dikirim karena form UI
+        // memilihnya secara eksplisit.
+        if (isset($options['follow_external'])) {
+            $arguments[] = '--follow-external=' . SiteConfig::followExternalMode($options['follow_external']);
         }
 
         // Jatah pengulangan otomatis ikut dikirim sebagai argumen supaya job

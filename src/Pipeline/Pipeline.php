@@ -8,7 +8,9 @@ use App\Crawl\ContentApi;
 use App\Crawl\DocumentApi;
 use App\Crawl\DocumentHarvest;
 use App\Crawl\FetchResult;
+use App\Crawl\GoogleDrive;
 use App\Crawl\HeadlessRenderer;
+use App\Crawl\HostFamily;
 use App\Crawl\HtmlFetcher;
 use App\Crawl\HtmlToMarkdown;
 use App\Crawl\LinkExtractor;
@@ -143,6 +145,33 @@ final class Pipeline
     /** Apakah crawling berantai aktif pada site yang sedang diproses. */
     private bool $followLinksRun = true;
 
+    /**
+     * Mode jelajah situs lain untuk site yang sedang diproses:
+     * off | family | all (lihat SiteConfig::$followExternal).
+     */
+    private string $followExternalRun = 'off';
+
+    /** Batas jumlah host yang boleh dijelajahi satu site (0 = tanpa batas). */
+    private int $followExternalMaxHosts = 25;
+
+    /**
+     * Host yang sudah "dibuka" pada site yang sedang diproses (start_urls +
+     * host lintas situs). Dipakai untuk batas follow_external_max_hosts dan
+     * log HOST_BARU sekali per host.
+     *
+     * @var array<string, bool>
+     */
+    private array $hostsSeen = [];
+
+    /** @var array<string, bool> host yang sudah dilaporkan melewati batas host */
+    private array $hostLimitWarned = [];
+
+    /** Klien Google Drive (folder publik + unduhan berkas). */
+    private GoogleDrive $googleDrive;
+
+    /** Batas jumlah berkas per folder Google Drive. */
+    private int $gdriveMaxFiles = 200;
+
     /** Jumlah URL yang diunduh bersamaan per batch (CRAWL_CONCURRENCY). */
     private int $concurrency = 1;
 
@@ -208,6 +237,8 @@ final class Pipeline
         $this->respectRobotsDefault = (bool) ($this->crawlConfig['respect_robots'] ?? true);
         $this->concurrency = max(1, (int) ($this->crawlConfig['concurrency'] ?? 1));
         $this->followDocumentLinks = (bool) ($this->crawlConfig['follow_document_links'] ?? false);
+        $this->followExternalMaxHosts = max(0, (int) ($this->crawlConfig['follow_external_max_hosts'] ?? 25));
+        $this->gdriveMaxFiles = max(1, (int) ($this->crawlConfig['gdrive_max_files'] ?? 200));
 
         $http = new HttpClient(
             userAgent: (string) ($this->crawlConfig['user_agent'] ?? 'crawler-embed/1.0'),
@@ -230,6 +261,7 @@ final class Pipeline
         $this->contentApi = new ContentApi($http, $this->fallbackParser);
         $this->documentApi = new DocumentApi($http);
         $this->harvest = new DocumentHarvest($http);
+        $this->googleDrive = new GoogleDrive($http);
         $this->autoDocumentsMax = max(1, (int) ($this->crawlConfig['auto_documents_max'] ?? 200));
         $this->autoDocumentsApis = max(0, (int) ($this->crawlConfig['auto_documents_apis'] ?? 8));
         $this->renderer = new HeadlessRenderer($this->crawlConfig);
@@ -372,10 +404,24 @@ final class Pipeline
         $maxPages = max(0, (int) ($options['max_pages'] ?? $site->maxPages));
         $batasHalaman = $maxPages === 0 ? PHP_INT_MAX : $maxPages;
         $batasAntrean = $maxPages === 0 ? PHP_INT_MAX : $maxPages * 5;
-        $maxDepth = max(0, (int) ($options['max_depth'] ?? $site->maxDepth));
+        $maxDepth = max(-1, (int) ($options['max_depth'] ?? $site->maxDepth));
+        $kedalamanTanpaBatas = $maxDepth < 0;
         $followLinks = (bool) ($options['follow_links'] ?? $site->followLinks);
         $saveHtml = (bool) ($options['save_html'] ?? $site->saveHtml);
         $this->followLinksRun = $followLinks;
+
+        // Jelajah SITUS LAIN yang ditautkan halaman (mis. kemendagri.go.id ->
+        // otda.kemendagri.go.id): nilai entri site bisa ditimpa per run lewat
+        // opsi --follow-external=off|family|all. Host pada start_urls selalu
+        // dianggap "sudah dibuka".
+        $this->followExternalRun = SiteConfig::followExternalMode(
+            $options['follow_external'] ?? $site->followExternal
+        );
+        $this->hostsSeen = [];
+
+        foreach ($site->hosts() as $host) {
+            $this->hostsSeen[$host] = true;
+        }
 
         $stats = &$this->result->site($id);
         $stats['nama'] = $site->name;
@@ -389,7 +435,7 @@ final class Pipeline
             'jenis' => $site->documentMode ? 'dokumen' : 'web',
             'start_urls' => implode(', ', $site->startUrls),
             'max_halaman' => $maxPages === 0 ? 'tanpa batas' : $maxPages,
-            'max_kedalaman' => $maxDepth,
+            'max_kedalaman' => $kedalamanTanpaBatas ? 'tanpa batas' : $maxDepth,
             'ikuti_tautan' => $followLinks,
             'tautan_dokumen' => $this->followDocumentLinks ? 'diikuti' : 'dilewati',
             'chunk' => $site->chunkSize . '/' . $site->chunkOverlap,
@@ -399,6 +445,9 @@ final class Pipeline
             'batas_permintaan_run' => $this->requestBudget === 0 ? 'tanpa batas' : $this->requestBudget,
             'kuota_tersisa' => $this->requestBudget === 0 ? 'tanpa batas' : max(0, $this->requestBudget - $this->requestsUsed),
             'konkurensi_unduh' => $this->concurrency,
+            'jelajah_situs_lain' => $this->followExternalRun === 'off'
+                ? 'tidak'
+                : $this->followExternalRun . ' (maks ' . ($this->followExternalMaxHosts > 0 ? $this->followExternalMaxHosts : 'tanpa batas') . ' host)',
         ]);
 
         $respectRobots = (bool) ($options['respect_robots'] ?? ($site->respectRobots && $this->respectRobotsDefault));
@@ -418,6 +467,25 @@ final class Pipeline
         if ($robots->addressRetry) {
             $this->warnAddressRetry($robots->url, $robots->remoteIp);
         }
+
+        // robots.txt per host: URL lintas situs diperiksa dengan robots.txt
+        // HOST-NYA SENDIRI (bukan robots.txt site awal) supaya aturan host
+        // tujuan tetap dihormati. RobotsTxt host lain dimuat sekali per host.
+        $robotsUntuk = function (string $url) use ($site, $robots, $respectRobots): RobotsTxt {
+            if (!$respectRobots) {
+                return $robots;
+            }
+
+            $host = Text::hostname($url);
+
+            if (in_array($host, $site->hosts(), true)) {
+                return $robots;
+            }
+
+            $skema = strtolower((string) (parse_url($url, PHP_URL_SCHEME) ?? 'https'));
+
+            return $this->robotsForHost($host, $skema === 'http' ? 'http' : 'https');
+        };
 
         $delayMs = $robots->effectiveDelayMs($site->rateLimitMs);
         $vectorFile = $this->store->vectorPath($site, $this->logger->runId());
@@ -495,7 +563,24 @@ final class Pipeline
                 // API resminya dan berkasnya sering ada di host lain, jadi
                 // pemeriksaan host/include/exclude site dilewati (robots.txt
                 // host berkas tetap diperiksa saat pendaftaran antrean).
-                if (!$dariApiDokumen && !$site->allowsUrl($url)) {
+                // Tautan FOLDER Google Drive tidak pernah diunduh sebagai
+                // halaman: isinya sudah diperluas menjadi berkas dokumen saat
+                // tautan diekstrak (lihat expandDriveFolders()).
+                if (GoogleDrive::isFolderUrl($url)) {
+                    $this->result->urlsSkipped++;
+                    $stats['url_dilewati']++;
+                    $this->logger->event('GDRIVE_SKIP', Logger::STATUS_SKIP, ['url' => $url], 'Tautan folder Google Drive dilewati (isinya sudah diperluas menjadi berkas dokumen)');
+
+                    continue;
+                }
+
+                // Host di luar start_urls: dizinkan hanya bila mode jelajah
+                // situs lain mengizinkan (off/family/all + batas jumlah host).
+                $hostUrl = Text::hostname($url);
+                $izinHostLain = !in_array($hostUrl, $site->hosts(), true)
+                    && $this->hostLainDiizinkan($site, $hostUrl);
+
+                if (!$dariApiDokumen && !$site->allowsUrl($url, $izinHostLain)) {
                     $this->result->urlsSkipped++;
                     $stats['url_dilewati']++;
                     $this->logger->event('LINK_SKIP', Logger::STATUS_SKIP, ['url' => $url, 'kedalaman' => $depth], 'Tidak cocok host/include/exclude site');
@@ -503,7 +588,7 @@ final class Pipeline
                     continue;
                 }
 
-                if (!$dariApiDokumen && !$robots->allows($url)) {
+                if (!$dariApiDokumen && !$robotsUntuk($url)->allows($url)) {
                     $this->result->urlsSkipped++;
                     $stats['url_dilewati']++;
                     $this->logger->event('ROBOTS_BLOCK', Logger::STATUS_SKIP, ['url' => $url], 'Dilarang oleh robots.txt');
@@ -555,7 +640,7 @@ final class Pipeline
 
                 $vectorsWritten += $outcome['vectors'];
 
-                if (!$outcome['ok'] || !$followLinks || $depth >= $maxDepth) {
+                if (!$outcome['ok'] || !$followLinks || !self::depthAllowed($depth, $maxDepth)) {
                     continue;
                 }
 
@@ -1044,12 +1129,19 @@ final class Pipeline
     {
         $targets = [];
         $documents = [];
+        $asalUsul = [];
+
         foreach ($batch as $item) {
             $url = (string) $item['url'];
-            $targets[$url] = $this->store->rawPath($site, $url);
+            // Tautan Google Drive diunduh lewat URL unduhan/ekspor Drive,
+            // sedangkan nama berkas & identitas dokumen tetap dari tautan asli.
+            $fetchUrl = self::driveFetchUrl($url) ?? $url;
+
+            $targets[$fetchUrl] = $this->store->rawPath($site, $url);
             // Keputusan dokumen dihitung sekali di sini supaya unduhan batch
             // memakai header/batas ukuran yang tepat (lihat isDocumentUrl()).
-            $documents[$url] = $this->isDocumentUrl($site, $url);
+            $documents[$fetchUrl] = $this->isDocumentUrl($site, $url);
+            $asalUsul[$fetchUrl] = $url;
         }
 
         if ($this->concurrency > 1 && count($targets) > 1) {
@@ -1057,15 +1149,46 @@ final class Pipeline
                 'konkurensi' => $this->concurrency,
             ]);
 
-            return $this->fetcher->fetchMany($site, $targets, $this->concurrency, $documents);
+            $hasil = $this->fetcher->fetchMany($site, $targets, $this->concurrency, $documents);
+        } else {
+            $hasil = [];
+
+            foreach ($targets as $fetchUrl => $path) {
+                $hasil[$fetchUrl] = $this->fetcher->fetch($site, $fetchUrl, $path, $documents[$fetchUrl] ?? null);
+            }
         }
 
         $results = [];
-        foreach ($targets as $url => $path) {
-            $results[$url] = $this->fetcher->fetch($site, $url, $path, $documents[$url] ?? null);
+
+        foreach ($hasil as $fetchUrl => $result) {
+            $asli = $asalUsul[$fetchUrl] ?? $fetchUrl;
+            $results[$asli] = $fetchUrl === $asli ? $result : $result->withUrl($asli);
         }
 
         return $results;
+    }
+
+    /**
+     * URL yang BENAR diunduh untuk sebuah tautan Google Drive.
+     *
+     * Berkas Drive diambil lewat drive.usercontent.google.com (menangani
+     * halaman konfirmasi berkas besar), berkas Google Docs/Sheets/Slides lewat
+     * endpoint EKSPOR (docx/xlsx/pptx) supaya bisa dibaca /parse.
+     * null = bukan tautan Drive, URL dipakai apa adanya.
+     */
+    private static function driveFetchUrl(string $url): ?string
+    {
+        $target = GoogleDrive::target($url);
+
+        if ($target === null || $target['folder']) {
+            return null;
+        }
+
+        return GoogleDrive::downloadUrl(
+            (string) $target['id'],
+            $target['tipe'] === 'native' ? (string) $target['format'] : '',
+            ''
+        );
     }
 
     /**
@@ -1115,6 +1238,12 @@ final class Pipeline
         // dan ekstensinya bisa saja tanpa .pdf (endpoint unduhan).
         if (isset($this->documentApiUrls[$site->id][$url])) {
             return true;
+        }
+
+        // Tautan Google Drive: berkas (file/native) SELALU dokumen; folder
+        // tidak pernah diunduh sebagai halaman (isinya diperluas lebih dulu).
+        if (GoogleDrive::isDriveUrl($url)) {
+            return !GoogleDrive::isFolderUrl($url);
         }
 
         if ($site->isDocument($url)) {
@@ -1215,7 +1344,14 @@ final class Pipeline
                 ? ($document ? 'Mengunduh berkas dokumen' : 'Mengunduh HTML')
                 : 'Memakai berkas hasil unduhan batch'));
 
-        $fetch = $preFetched ?? $this->fetcher->fetch($site, $url, $rawPath);
+        $fetch = $preFetched ?? $this->fetcher->fetch($site, self::driveFetchUrl($url) ?? $url, $rawPath);
+
+        // Tautan Google Drive diunduh lewat URL unduhan/ekspor Drive: hasilnya
+        // dikembalikan dengan URL asli supaya document_id, payload.url, dan
+        // nama berkas tetap memakai tautan yang ada di halaman situs.
+        if ($preFetched === null && $fetch->url !== $url) {
+            $fetch = $fetch->withUrl($url);
+        }
 
         if (!$fetch->ok) {
             $this->result->fetchFailed++;
@@ -2277,20 +2413,188 @@ final class Pipeline
     }
 
     /**
+     * Perluas tautan FOLDER Google Drive menjadi daftar berkas isinya.
+     *
+     * Folder publik dibaca tanpa API key (GoogleDrive::listFolder). Setiap
+     * berkas diantrekan sebagai DOKUMEN dengan judul dari nama berkas Drive
+     * (dipakai payload.title) sehingga isinya ikut /parse -> /embed -> Qdrant.
+     *
+     * @param list<string> $urls
+     *
+     * @return array{berkas: list<string>, folder: int, gagal: int}
+     */
+    private function expandDriveFolders(SiteConfig $site, array $urls): array
+    {
+        if (!$site->googleDrive) {
+            return ['berkas' => [], 'folder' => 0, 'gagal' => 0];
+        }
+
+        $berkas = [];
+        $folder = 0;
+        $gagal = 0;
+
+        foreach ($urls as $url) {
+            if (!GoogleDrive::isFolderUrl($url)) {
+                continue;
+            }
+
+            $target = GoogleDrive::target($url);
+            $folderId = is_array($target) ? (string) $target['id'] : '';
+
+            if ($folderId === '') {
+                continue;
+            }
+
+            $folder++;
+            $hasil = $this->googleDrive->listFolder($folderId, $this->gdriveMaxFiles);
+
+            if ($hasil['berkas'] === []) {
+                $gagal++;
+
+                $this->logger->event('GDRIVE_GAGAL', Logger::STATUS_SKIP, [
+                    'url' => $url,
+                    'folder_id' => $folderId,
+                    'sebab' => $hasil['galat'],
+                ], 'Daftar isi folder Google Drive tidak bisa dibaca'
+                    . ($hasil['galat'] !== '' ? ': ' . $hasil['galat'] : ''));
+
+                continue;
+            }
+
+            $this->logger->event('GDRIVE_SCAN', Logger::STATUS_OK, [
+                'url' => $url,
+                'folder_id' => $folderId,
+                'berkas' => count($hasil['berkas']),
+                'sumber' => $hasil['sumber'],
+            ], 'Isi folder Google Drive publik ditemukan');
+
+            foreach ($hasil['berkas'] as $item) {
+                $fileUrl = 'https://drive.google.com/file/d/' . $item['id'] . '/view';
+
+                if (isset($this->documentApiUrls[$site->id][$fileUrl])) {
+                    continue;
+                }
+
+                // Judul dari nama berkas Drive (dipakai payload.title).
+                $this->documentApiUrls[$site->id][$fileUrl] = $item['nama'];
+                $berkas[] = $fileUrl;
+            }
+        }
+
+        if ($berkas !== []) {
+            $this->logger->event('GDRIVE_QUEUE', Logger::STATUS_OK, [
+                'folder' => $folder,
+                'berkas' => count($berkas),
+            ], 'Berkas dari folder Google Drive diantrekan sebagai dokumen');
+        }
+
+        return ['berkas' => $berkas, 'folder' => $folder, 'gagal' => $gagal];
+    }
+
+    /**
+     * Boleh menjelajahi host DI LUAR start_urls?
+     *
+     * Mode (off|family|all) menentukan kriteria, dan jumlah host yang dibuka
+     * dibatasi crawl.follow_external_max_hosts (mode "all" tidak boleh
+     * menjelajahi seluruh internet). Host baru dicatat pada log sebagai
+     * HOST_BARU; yang melewati batas sebagai HOST_LIMIT.
+     */
+    private function hostLainDiizinkan(SiteConfig $site, string $host): bool
+    {
+        if ($host === '' || in_array($host, $site->hosts(), true)) {
+            return true;
+        }
+
+        if ($this->followExternalRun === 'off') {
+            return false;
+        }
+
+        if ($this->followExternalRun === 'family' && !HostFamily::inFamilies($site->hosts(), $host)) {
+            return false;
+        }
+
+        if (isset($this->hostsSeen[$host])) {
+            return true;
+        }
+
+        if ($this->followExternalMaxHosts > 0 && count($this->hostsSeen) >= $this->followExternalMaxHosts) {
+            if (!isset($this->hostLimitWarned[$host])) {
+                $this->hostLimitWarned[$host] = true;
+
+                $this->logger->event('HOST_LIMIT', Logger::STATUS_SKIP, [
+                    'host' => $host,
+                    'host_terpakai' => count($this->hostsSeen),
+                    'batas' => $this->followExternalMaxHosts,
+                ], 'Batas jumlah host lintas situs tercapai; host ini dilewati '
+                    . '(naikkan CRAWLER_FOLLOW_EXTERNAL_MAX_HOSTS / follow_external_max_hosts bila perlu)');
+            }
+
+            return false;
+        }
+
+        $this->hostsSeen[$host] = true;
+
+        $this->logger->event('HOST_BARU', Logger::STATUS_OK, [
+            'host' => $host,
+            'keluarga' => HostFamily::registrableDomain($host),
+            'host_dibuka' => count($this->hostsSeen),
+            'mode' => $this->followExternalRun,
+        ], 'Host lintas situs dibuka: halaman di host ini ikut dijelajahi');
+
+        return true;
+    }
+
+    /**
+     * Batas kedalaman masih boleh diikuti? max_depth = -1 berarti TANPA BATAS:
+     * seluruh situs dijelajahi sampai tidak ada tautan baru (lihat
+     * CRAWL_MAX_DEPTH / opsi --max-depth=-1).
+     */
+    private static function depthAllowed(int $depth, int $maxDepth): bool
+    {
+        return $maxDepth < 0 || $depth < $maxDepth;
+    }
+
+    /**
      * Ambil tautan baru dari HTML (hanya bila crawling berantai aktif).
      *
      * @return list<string>
      */
     private function extractLinks(SiteConfig $site, string $html, string $baseUrl, int $depth, int $maxDepth): array
     {
-        if ($html === '' || !$this->followLinksRun || $depth >= $maxDepth) {
+        if ($html === '' || !$this->followLinksRun || !self::depthAllowed($depth, $maxDepth)) {
             return [];
         }
 
         $found = LinkExtractor::extract($html, $baseUrl, $this->skipExtensions());
+
+        // Tautan FOLDER Google Drive diperluas LEBIH DULU (host Drive berbeda
+        // dari host situs sehingga pemeriksaan host site tidak berlaku untuk
+        // folder) menjadi daftar berkas yang siap diunduh.
+        $dariDrive = $this->expandDriveFolders($site, $found);
+
         $allowed = [];
         foreach ($found as $link) {
-            if ($site->allowsUrl($link)) {
+            if (GoogleDrive::isFolderUrl($link)) {
+                // Folder hanya sumber daftar berkas; halamannya tidak diunduh.
+                continue;
+            }
+
+            // Tautan ke host lain diizinkan sesuai mode jelajah situs lain
+            // (off/family/all) + batas jumlah host; pola include/exclude site
+            // tetap berlaku untuk semua tautan.
+            $hostLink = Text::hostname($link);
+            $izinHostLain = !in_array($hostLink, $site->hosts(), true)
+                && $this->hostLainDiizinkan($site, $hostLink);
+
+            if ($site->allowsUrl($link, $izinHostLain)) {
+                $allowed[] = $link;
+            }
+        }
+
+        // Berkas hasil perluasan folder Drive diantrekan sebagai dokumen walau
+        // hostnya berbeda (sama seperti berkas dari aturan "document_api").
+        foreach ($dariDrive['berkas'] as $link) {
+            if (!in_array($link, $allowed, true)) {
                 $allowed[] = $link;
             }
         }

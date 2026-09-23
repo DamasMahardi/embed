@@ -59,6 +59,34 @@ final class FetchResult
         );
     }
 
+    /**
+     * Salinan hasil unduhan dengan URL permintaan yang berbeda dari URL aslinya.
+     *
+     * Dipakai untuk tautan Google Drive: halaman/URL yang di-request (mis.
+     * https://drive.google.com/file/d/<ID>/view atau .../document/d/<ID>/edit)
+     * dipertahankan sebagai identitas dokumen (payload.url + document_id),
+     * sedangkan berkasnya diambil dari URL unduhan/ekspor Drive.
+     */
+    public function withUrl(string $url): self
+    {
+        return new self(
+            url: $url,
+            effectiveUrl: $this->effectiveUrl,
+            httpStatus: $this->httpStatus,
+            ok: $this->ok,
+            isHtml: $this->isHtml,
+            contentType: $this->contentType,
+            bytes: $this->bytes,
+            durationSeconds: $this->durationSeconds,
+            path: $this->path,
+            charset: $this->charset,
+            error: $this->error,
+            insecureTls: $this->insecureTls,
+            remoteIp: $this->remoteIp,
+            addressRetry: $this->addressRetry,
+        );
+    }
+
     public function extension(): string
     {
         $path = parse_url($this->effectiveUrl, PHP_URL_PATH);

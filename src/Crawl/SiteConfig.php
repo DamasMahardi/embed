@@ -165,6 +165,27 @@ final class SiteConfig
         public readonly array $documentApi = [],
         public readonly bool $deleteDocumentsAfterPush = true,
         public readonly bool $autoDocuments = true,
+        /**
+         * Jelajahi situs LAIN yang ditautkan halaman situs ini:
+         *   'off'    = hanya host pada start_urls (perilaku lama);
+         *   'family' = hanya host satu keluarga domain (mis. halaman
+         *              www.kemendagri.go.id menautkan otda.kemendagri.go.id,
+         *              polpum.kemendagri.go.id, ...);
+         *   'all'    = semua host http(s) yang ditemukan (dibatasi
+         *              crawl.follow_external_max_hosts).
+         * Nilai bawaan entri diambil dari "follow_external" pada
+         * config/sites.json / CRAWLER_FOLLOW_EXTERNAL; satu run bisa
+         * menimpanya lewat opsi --follow-external=...
+         */
+        public readonly string $followExternal = 'off',
+        /**
+         * Ikuti tautan Google Drive pada halaman yang di-crawl: folder publik
+         * dibaca isinya (embeddedfolderview / payload _DRIVE_ivd), lalu setiap
+         * berkasnya diunduh -> /parse -> /embed -> Qdrant. Berkas Google Docs
+         * (document/spreadsheets/presentation) diekspor ke docx/xlsx/pptx.
+         * Boleh dimatikan per entri sites.json: "google_drive": false.
+         */
+        public readonly bool $googleDrive = true,
     ) {
     }
 
@@ -279,7 +300,7 @@ final class SiteConfig
             maxPages: max(0, (int) ($documentMode && !$explicit(['max_pages', 'maxPages'])
                 ? 1
                 : $pick(['max_pages', 'maxPages'], $documentMode ? 1 : 0))),
-            maxDepth: max(0, (int) ($documentMode && !$explicit(['max_depth', 'maxDepth'])
+            maxDepth: max(-1, (int) ($documentMode && !$explicit(['max_depth', 'maxDepth'])
                 ? 0
                 : $pick(['max_depth', 'maxDepth'], $documentMode ? 0 : 1))),
             followLinks: (bool) ($documentMode && !$explicit(['follow_links', 'followLinks'])
@@ -321,6 +342,14 @@ final class SiteConfig
             autoDocuments: (bool) $pick(
                 ['auto_documents', 'autoDocuments'],
                 $defaults['auto_documents'] ?? true
+            ),
+            followExternal: self::followExternalMode($pick(
+                ['follow_external', 'followExternal'],
+                $defaults['follow_external'] ?? 'off'
+            )),
+            googleDrive: (bool) $pick(
+                ['google_drive', 'googleDrive'],
+                $defaults['google_drive'] ?? true
             ),
         );
     }
@@ -618,6 +647,17 @@ final class SiteConfig
     }
 
     /**
+     * Normalisasi mode "follow_external": off | family | all. Nilai yang tidak
+     * dikenal (kosong/salah tulis) menjadi "off" supaya perilaku tetap aman.
+     */
+    public static function followExternalMode(mixed $value): string
+    {
+        $mode = strtolower(trim((string) $value));
+
+        return in_array($mode, ['off', 'family', 'all'], true) ? $mode : 'off';
+    }
+
+    /**
      * Ekstensi berkas yang dianggap DOKUMEN (bukan halaman HTML).
      */
     public static function isDocumentUrl(string $url): bool
@@ -784,13 +824,13 @@ final class SiteConfig
      * Cek apakah URL boleh di-crawl: host diizinkan, tidak kena
      * exclude_patterns, dan (bila ada) cocok salah satu include_patterns.
      */
-    public function allowsUrl(string $url): bool
+    public function allowsUrl(string $url, bool $izinkanHostLain = false): bool
     {
         if (preg_match('#^https?://#i', $url) !== 1) {
             return false;
         }
 
-        if ($this->sameHostOnly && !in_array(Text::hostname($url), $this->hosts(), true)) {
+        if (!$izinkanHostLain && $this->sameHostOnly && !in_array(Text::hostname($url), $this->hosts(), true)) {
             return false;
         }
 
