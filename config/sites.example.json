@@ -1,0 +1,65 @@
+[
+  {
+    "url": "https://dindikbud.serangkab.go.id/laporan-anggaran-2024.pdf",
+    "documentType": "APBD",
+    "province": "Banten",
+    "city": "Kabupaten Serang",
+    "year": 2024
+  },
+  {
+    "url": "https://contoh-pemda.go.id/lppd-2024",
+    "documentType": "LPPD",
+    "province": "Jawa Barat",
+    "city": "Kota Bandung",
+    "year": 2024
+  },
+  {
+    "url": "https://dindikbud.serangkab.go.id/rkpd-2025.pdf",
+    "name": "RKPD Kabupaten Serang 2025",
+    "documentType": "RKPD",
+    "province": "Banten",
+    "city": "Kabupaten Serang",
+    "year": 2025
+  },
+  {
+    "url": "https://contoh-pemda.go.id/dokumen/renja-2023.docx",
+    "enabled": false,
+    "documentType": "RENJA",
+    "province": "Jawa Barat",
+    "city": "Kota Bandung",
+    "year": 2023,
+    "max_pages": 3,
+    "rate_limit_ms": 2000
+  },
+  {
+    "url": "https://contoh-pemda.go.id/",
+    "documentType": "",
+    "province": "Jawa Barat",
+    "city": "",
+    "year": "",
+    "kind": "web",
+    "follow_links": true,
+    "max_pages": 20,
+    "max_depth": 1,
+    "chunk_size": 12000,
+    "chunk_overlap": 1200,
+    "clean_markdown": true,
+    "max_link_ratio": 0.6,
+    "drop_duplicate_content": true,
+    "duplicate_similarity": 0.85,
+    "js_render": "auto",
+    "content_api": {
+      "enabled": false,
+      "rules": [
+        {
+          "match": "^https?://contoh-pemda\\.go\\.id/profil/",
+          "url": "https://api.contoh-pemda.go.id/v1/pages/public/slug/{slug}",
+          "field": "data.pages_desc",
+          "title_field": "data.pages_name",
+          "format": "html",
+          "min_length": 120
+        }
+      ]
+    }
+  }
+]

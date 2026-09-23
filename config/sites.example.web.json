@@ -1,0 +1,138 @@
+{
+  "_catatan": [
+    "Contoh format LAMA (objek) untuk crawl web berantai: { \"defaults\": {...}, \"sites\": [...] }.",
+    "Format ini tetap didukung; salin/merge isi array 'sites' ke config/sites.json bila ingin memakainya.",
+    "Format yang dipakai secara default sekarang adalah array di level teratas (lihat config/sites.example.json).",
+    "Field di 'defaults' otomatis dipakai semua site dan boleh di-override per site.",
+    "include_patterns / exclude_patterns adalah regex PCRE (tanpa delimiter) yang diuji ke URL lengkap.",
+    "max_depth 0 = hanya start_urls, 1 = boleh ikut link dari start_urls, dst.",
+    "metadata disimpan ke payload vektor (document_type, province, city, year).",
+    "Bentuk ringkas tiap entri: url (wajib), documentType, province, city, year - isi \"\" bila belum ada; nilai kosong tidak ikut ke payload.",
+    "Field \"id\" dan \"name\" opsional: id otomatis dari host URL, \"name\" hanya label tampilan (log, list, site_name payload).",
+    "clean_markdown membuang menu navigasi/ornament/footer dari markdown /parse sebelum di-chunk.",
+    "max_link_ratio (0.0-1.0) membuang chunk yang mayoritas markup tautan (menu/daftar isi); 1 = tanpa batas.",
+    "drop_duplicate_content: URL berbeda pada site yang sama yang menghasilkan markdown identik ATAU hampir sama (menu/tagline/footer situs berbasis JavaScript) hanya dikirim sekali ke /embed.",
+    "duplicate_similarity: batas kemiripan kata isi yang dianggap sama (0.0-1.0); 1.0 = hanya isi yang persis identik.",
+    "js_render: halaman berbasis JavaScript dirender lebih dahulu dengan browser headless (Chrome/Edge) supaya isi halaman sebenarnya terbaca, sehingga tidak perlu aturan API per situs.",
+    "  Bentuk: false | \"off\" | \"auto\" (bawaan) | \"always\" | {\"mode\": \"auto\", \"wait_ms\": 6000, \"timeout_ms\": 25000, \"bin\": \"\", \"flags\": \"\", \"user_agent\": \"\", \"min_text\": 2000, \"ratio\": 0.03}.",
+    "  auto = hanya halaman yang terdeteksi kerangka SPA yang dirender; always = semua halaman; off/false = HTML unduhan apa adanya.",
+    "content_api: CADANGAN bila render browser headless tidak mungkin; situs yang isi halamannya baru dibuat di browser (mis. Next.js App Router) hanya mengirim kerangka HTML, aturan ini mengambil isi halaman dari API resmi situs.",
+    "  Bentuk: {\"rules\": [{\"match\": regex URL, \"url\": template endpoint, \"field\": jalur field isi, \"title_field\": jalur judul, \"format\": \"html|text\", \"min_length\": 120, \"timeout\": 20}]}.",
+    "  Placeholder template: {slug} (segmen terakhir path), {path}, {host}, {query}, {url}, dan {1}..{n} (grup tangkap regex match); aturan tanpa \"match\" berlaku untuk semua URL.",
+    "  Kegagalan API tidak menggagalkan crawl: halaman diproses lewat /parse seperti biasa dan kejadiannya dicatat pada log (CONTENT_API_BEFORE/CONTENT_API_AFTER).",
+    "  Contoh aturan untuk situs di bawah ada pada field \"content_api\" site pertama.",
+    "document_api: daftar BERKAS DOKUMEN dari API JSON situs - dipakai bila tautan unduhan TIDAK PERNAH ada di HTML/DOM (baru dibuat JavaScript setelah data API datang), mis. halaman /informasi-publik di www.kemendagri.go.id yang daftar PDF-nya datang dari backend.kemendagri.go.id.",
+    "  Bentuk: {\"url\": \"https://backend.contoh.go.id/api/v1/informasi-publik/public\", \"items_field\": \"data.informasi\", \"children_field\": \"children\", \"link_field\": \"file\", \"title_field\": \"item\", \"base_url\": \"https://backend.contoh.go.id/uploads\", \"extensions\": [\"pdf\"], \"max_documents\": 200, \"timeout\": 30}.",
+    "  url = endpoint JSON (wajib); items_field = jalur field berisi daftar item (kosong = seluruh badan respons); children_field = nama field anak yang ikut ditelusuri; link_field = jalur field berisi path/URL berkas; base_url = awalan untuk path relatif (kosong = host endpoint API).",
+    "  title_field dipakai sebagai judul dokumen pada payload vektor (nama berkas PDF bukan judul); extensions membatasi ekstensi (kosong = semua ekstensi dokumen); max_documents membatasi jumlah berkas satu aturan.",
+    "  URL hasil document_api diproses sebagai DOKUMEN walau host-nya berbeda dari halaman situs (pemeriksaan host/include/exclude site dilewati), tetapi robots.txt host berkas tetap dihormati; kejadiannya dicatat pada log (DOC_API, DOC_API_QUEUE, DOC_API_SKIP)."
+  ],
+  "defaults": {
+    "enabled": true,
+    "follow_links": true,
+    "same_host_only": true,
+    "max_pages": 100,
+    "max_depth": 0,
+    "rate_limit_ms": 1000,
+    "respect_robots_txt": true,
+    "request_timeout": 60,
+    "save_html": true,
+    "chunk_size": 12000,
+    "chunk_overlap": 1200,
+    "clean_markdown": true,
+    "drop_duplicate_content": true,
+    "duplicate_similarity": 0.85,
+    "js_render": {
+      "mode": "auto",
+      "wait_ms": 6000,
+      "timeout_ms": 25000,
+      "bin": "",
+      "flags": "",
+      "min_text": 2000,
+      "ratio": 0.03
+    },
+    "max_link_ratio": 0.6,
+    "embed_batch_size": 8
+  },
+  "sites": [
+    {
+      "id": "kemendagri",
+      "name": "Kementerian Dalam Negeri Republik Indonesia",
+      "enabled": true,
+      "start_urls": [
+        "https://www.kemendagri.go.id/"
+      ],
+      "max_pages": 100,
+      "max_depth": 0,
+      "rate_limit_ms": 1500,
+      "include_patterns": [
+        "^https?://(www\\.)?kemendagri\\.go\\.id/"
+      ],
+      "exclude_patterns": [
+        "\\.(pdf|jpg|jpeg|png|gif|svg|ico|zip|rar|docx?|xlsx?|pptx?|mp4|mp3)$",
+        "/login",
+        "/search",
+        "/wp-admin"
+      ],
+      "content_api": {
+        "rules": [
+          {
+            "match": "^https?://(?:www\\.)?kemendagri\\.go\\.id/(?:profil/)?(sejarah|tugas-dan-fungsi|arti-logolambang|struktur-organisasi)/?$",
+            "url": "https://backend.kemendagri.go.id/api/v1/pages/public/slug/{1}",
+            "field": "data.pages_desc",
+            "title_field": "data.pages_name",
+            "format": "html",
+            "min_length": 120
+          },
+          {
+            "match": "^https?://(?:www\\.)?kemendagri\\.go\\.id/profil/menteri/?$",
+            "url": "https://backend.kemendagri.go.id/api/v1/pages/public/slug/profil-menteri",
+            "field": "data.pages_desc",
+            "title_field": "data.pages_name"
+          }
+        ]
+      },
+      "document_api": {
+        "url": "https://backend.kemendagri.go.id/api/v1/informasi-publik/public",
+        "items_field": "data.informasi",
+        "children_field": "children",
+        "link_field": "file",
+        "title_field": "item",
+        "base_url": "https://backend.kemendagri.go.id/uploads",
+        "extensions": ["pdf"],
+        "max_documents": 200,
+        "timeout": 30
+      },
+      "metadata": {
+        "document_type": "WEB",
+        "province": "DKI Jakarta",
+        "city": "Jakarta Pusat",
+        "year": 2026
+      }
+    },
+    {
+      "id": "contoh-pemda",
+      "name": "Contoh portal pemda lain (go.id) - nonaktif",
+      "enabled": false,
+      "start_urls": [
+        "https://contoh-pemda.go.id/",
+        "https://contoh-pemda.go.id/berita"
+      ],
+      "max_pages": 20,
+      "max_depth": 2,
+      "include_patterns": [
+        "^https?://(www\\.)?contoh-pemda\\.go\\.id/"
+      ],
+      "exclude_patterns": [
+        "\\.(pdf|jpg|png|zip)$",
+        "/login"
+      ],
+      "metadata": {
+        "document_type": "WEB",
+        "province": "Jawa Barat",
+        "city": "Kota Bandung",
+        "year": 2025
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+/.env
+/vendor/
+/logs/*.txt
+/logs/runs/
+/logs/sites/
+/logs/terbaru.txt
+/storage/
+/_probe/
+.DS_Store
+Thumbs.db

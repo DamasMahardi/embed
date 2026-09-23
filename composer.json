@@ -1,0 +1,23 @@
+{
+  "name": "laragon/crawler-embed-php",
+  "description": "Crawler web go.id (PHP) -> POST /parse -> markdown -> chunk -> POST /embed -> vektor siap Qdrant, dengan log txt",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": ">=8.1",
+    "ext-curl": "*",
+    "ext-dom": "*",
+    "ext-mbstring": "*",
+    "ext-json": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "App\\": "src/"
+    }
+  },
+  "scripts": {
+    "crawl": "php bin/crawl.php crawl",
+    "list": "php bin/crawl.php list",
+    "health": "php bin/crawl.php health"
+  }
+}
